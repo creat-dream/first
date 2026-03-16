@@ -58,11 +58,15 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         
-        repository = new LoanRepository(getApplication());
-        
-        initViews();
-        setupListeners();
-        observeData();
+        try {
+            repository = new LoanRepository(getApplication());
+            initViews();
+            setupListeners();
+            observeData();
+        } catch (Exception e) {
+            Toast.makeText(this, "应用初始化失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            finish();
+        }
     }
     
     @Override

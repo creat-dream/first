@@ -1,7 +1,8 @@
 package com.finance.loanmanager.repository;
 
 import android.app.Application;
-import android.os.AsyncTask;
+import android.os.Handler;
+import android.os.Looper;
 
 import androidx.lifecycle.LiveData;
 
@@ -16,6 +17,8 @@ import com.finance.loanmanager.service.LoanCalculator;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 贷款数据仓库
@@ -26,12 +29,16 @@ public class LoanRepository {
     private final LoanDao loanDao;
     private final PaymentDao paymentDao;
     private final LiveData<List<Loan>> allLoans;
+    private final ExecutorService executorService;
+    private final Handler mainHandler;
     
     public LoanRepository(Application application) {
         AppDatabase database = AppDatabase.getInstance(application);
         loanDao = database.loanDao();
         paymentDao = database.paymentDao();
         allLoans = loanDao.getAllLoansLive();
+        executorService = Executors.newFixedThreadPool(4);
+        mainHandler = new Handler(Looper.getMainLooper());
     }
     
     // ==================== 贷款操作 ====================
@@ -196,15 +203,44 @@ public class LoanRepository {
     // ==================== 异步操作 ====================
     
     public void insertLoanAsync(Loan loan, InsertCallback callback) {
-        new InsertLoanAsyncTask(loanDao, callback).execute(loan);
+        executorService.execute(() -> {
+            double originalPayment = LoanCalculator.calculateMonthlyPayment(
+                    loan.getPrincipal(),
+                    loan.getAnnualRate(),
+                    loan.getMonths(),
+                    loan.getRepaymentMethod()
+            );
+            loan.setOriginalMonthlyPayment(originalPayment);
+            long id = loanDao.insertLoan(loan);
+            mainHandler.post(() -> {
+                if (callback != null) {
+                    callback.onComplete(id);
+                }
+            });
+        });
     }
     
     public void insertPaymentAsync(Payment payment, InsertCallback callback) {
-        new InsertPaymentAsyncTask(paymentDao, callback).execute(payment);
+        executorService.execute(() -> {
+            long id = paymentDao.insertPayment(payment);
+            mainHandler.post(() -> {
+                if (callback != null) {
+                    callback.onComplete(id);
+                }
+            });
+        });
     }
     
     public void deleteLoanAsync(int loanId, DeleteCallback callback) {
-        new DeleteLoanAsyncTask(loanDao, paymentDao, callback).execute(loanId);
+        executorService.execute(() -> {
+            paymentDao.deletePaymentsByLoanId(loanId);
+            loanDao.deleteLoanById(loanId);
+            mainHandler.post(() -> {
+                if (callback != null) {
+                    callback.onComplete();
+                }
+            });
+        });
     }
     
     // ==================== 回调接口 ====================
@@ -215,87 +251,6 @@ public class LoanRepository {
     
     public interface DeleteCallback {
         void onComplete();
-    }
-    
-    // ==================== 异步任务 ====================
-    
-    private static class InsertLoanAsyncTask extends AsyncTask<Loan, Void, Long> {
-        private final LoanDao loanDao;
-        private final InsertCallback callback;
-        
-        InsertLoanAsyncTask(LoanDao loanDao, InsertCallback callback) {
-            this.loanDao = loanDao;
-            this.callback = callback;
-        }
-        
-        @Override
-        protected Long doInBackground(Loan... loans) {
-            Loan loan = loans[0];
-            double originalPayment = LoanCalculator.calculateMonthlyPayment(
-                    loan.getPrincipal(),
-                    loan.getAnnualRate(),
-                    loan.getMonths(),
-                    loan.getRepaymentMethod()
-            );
-            loan.setOriginalMonthlyPayment(originalPayment);
-            return loanDao.insertLoan(loan);
-        }
-        
-        @Override
-        protected void onPostExecute(Long id) {
-            if (callback != null) {
-                callback.onComplete(id);
-            }
-        }
-    }
-    
-    private static class InsertPaymentAsyncTask extends AsyncTask<Payment, Void, Long> {
-        private final PaymentDao paymentDao;
-        private final InsertCallback callback;
-        
-        InsertPaymentAsyncTask(PaymentDao paymentDao, InsertCallback callback) {
-            this.paymentDao = paymentDao;
-            this.callback = callback;
-        }
-        
-        @Override
-        protected Long doInBackground(Payment... payments) {
-            return paymentDao.insertPayment(payments[0]);
-        }
-        
-        @Override
-        protected void onPostExecute(Long id) {
-            if (callback != null) {
-                callback.onComplete(id);
-            }
-        }
-    }
-    
-    private static class DeleteLoanAsyncTask extends AsyncTask<Integer, Void, Void> {
-        private final LoanDao loanDao;
-        private final PaymentDao paymentDao;
-        private final DeleteCallback callback;
-        
-        DeleteLoanAsyncTask(LoanDao loanDao, PaymentDao paymentDao, DeleteCallback callback) {
-            this.loanDao = loanDao;
-            this.paymentDao = paymentDao;
-            this.callback = callback;
-        }
-        
-        @Override
-        protected Void doInBackground(Integer... loanIds) {
-            int loanId = loanIds[0];
-            paymentDao.deletePaymentsByLoanId(loanId);
-            loanDao.deleteLoanById(loanId);
-            return null;
-        }
-        
-        @Override
-        protected void onPostExecute(Void aVoid) {
-            if (callback != null) {
-                callback.onComplete();
-            }
-        }
     }
     
     // ==================== 数据类 ====================
